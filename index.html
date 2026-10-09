@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ジェネレイティブ・ノイズ地形アーティスト</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #1a1208; }
+  .panel { background: rgba(40,25,8,0.9); border: 1px solid rgba(160,120,60,0.5); }
+  input[type=range] { accent-color: #c8a050; }
+</style>
+</head>
+<body class="text-gray-100 min-h-screen">
+<div class="max-w-5xl mx-auto p-3">
+  <h1 class="text-2xl font-bold text-center mb-1" style="color:#c8a050">ジェネレイティブ・ノイズ地形アーティスト</h1>
+  <p class="text-center text-amber-300 text-xs mb-3">手続き的ノイズで地形を生成。パラメータを調整してリアルな地形を作ろう。</p>
+
+  <div class="flex flex-wrap gap-3 mb-3 justify-center">
+    <div class="panel rounded-lg p-3">
+      <div class="text-xs text-amber-400 mb-2 font-semibold">生成パラメータ</div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+        <div class="flex items-center gap-2">
+          <label for="octaves">オクターブ数</label>
+          <input type="range" id="octaves" min="1" max="6" value="4" class="w-20" aria-label="オクターブ数">
+          <span id="octavesVal" class="text-amber-300 w-4">4</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <label for="persistence">持続係数</label>
+          <input type="range" id="persistence" min="0.3" max="0.7" step="0.05" value="0.5" class="w-20" aria-label="持続係数">
+          <span id="persistenceVal" class="text-amber-300 w-8">0.50</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <label for="scale">スケール（ズーム）</label>
+          <input type="range" id="scale" min="0.5" max="8" step="0.5" value="3" class="w-20" aria-label="スケール">
+          <span id="scaleVal" class="text-amber-300 w-4">3</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <label for="seedInput">シード値</label>
+          <input type="number" id="seedInput" value="42" class="w-16 px-1 rounded text-black text-xs" aria-label="シード値">
+        </div>
+      </div>
+    </div>
+
+    <div class="panel rounded-lg p-3">
+      <div class="text-xs text-amber-400 mb-2 font-semibold">表示オプション</div>
+      <div class="flex flex-col gap-2 text-xs">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="contourToggle" aria-label="等高線表示"> 等高線を表示
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="topoToggle" aria-label="地形図カラーパレット"> 地形図カラーパレット
+        </label>
+      </div>
+    </div>
+
+    <div class="panel rounded-lg p-3 flex flex-col gap-2">
+      <div class="text-xs text-amber-400 font-semibold">アクション</div>
+      <button id="randomSeed" class="px-3 py-1 rounded text-sm font-bold" style="background:#3a2008;border:1px solid #c8a050;color:#c8a050" aria-label="ランダムシードで地形を再生成">🎲 ランダム生成</button>
+      <button id="regenBtn" class="px-3 py-1 rounded text-sm font-bold" style="background:#0a2a0a;border:1px solid #60c060;color:#60c060" aria-label="現在の設定で地形を再生成">再生成</button>
+      <button id="exportBtn" class="px-3 py-1 rounded text-sm font-bold" style="background:#0a1a2a;border:1px solid #6090c0;color:#6090c0" aria-label="地形画像をPNGでエクスポート">PNG保存</button>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="panel rounded-lg p-2 mb-3 flex flex-wrap gap-2 text-xs justify-center" id="legend"></div>
+
+  <canvas id="terrainCanvas" width="640" height="480" class="rounded-lg border border-amber-900 w-full max-w-3xl block mx-auto" aria-label="地形生成結果の表示エリア"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('terrainCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// Value noise implementation
+function buildNoiseTable(seed) {
+  const SIZE = 256;
+  const table = new Float32Array(SIZE * SIZE);
+  // LCG random from seed
+  let s = seed | 0;
+  for (let i = 0; i < SIZE * SIZE; i++) {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    table[i] = ((s >>> 0) / 0xffffffff);
+  }
+  return { table, SIZE };
+}
+
+function valueNoise(nx, { table, SIZE }) {
+  const SIZE1 = SIZE - 1;
+  const ix = Math.floor(nx) & SIZE1;
+  const iy = 0; // We use 2D: call with nx, ny
+  return table[iy * SIZE + ix];
+}
+
+function valueNoise2D(nx, ny, { table, SIZE }) {
+  const SIZE1 = SIZE - 1;
+  const ix = Math.floor(nx) & SIZE1;
+  const iy = Math.floor(ny) & SIZE1;
+  const fx = nx - Math.floor(nx);
+  const fy = ny - Math.floor(ny);
+  // Smooth step
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const v00 = table[(iy & SIZE1) * SIZE + (ix & SIZE1)];
+  const v10 = table[(iy & SIZE1) * SIZE + ((ix+1) & SIZE1)];
+  const v01 = table[((iy+1) & SIZE1) * SIZE + (ix & SIZE1)];
+  const v11 = table[((iy+1) & SIZE1) * SIZE + ((ix+1) & SIZE1)];
+  return v00 * (1-ux) * (1-uy) + v10 * ux * (1-uy) + v01 * (1-ux) * uy + v11 * ux * uy;
+}
+
+function fbm(x, y, noiseData, octaves, persistence, lacunarity) {
+  let val = 0, amp = 1, freq = 1, maxVal = 0;
+  for (let i = 0; i < octaves; i++) {
+    val += valueNoise2D(x * freq, y * freq, noiseData) * amp;
+    maxVal += amp;
+    amp *= persistence;
+    freq *= lacunarity;
+  }
+  return val / maxVal;
+}
+
+// Color schemes
+const TERRAIN_COLORS = [
+  { max: 0.20, r: 10,  g: 30,  b: 80,  name: '深海',  color: '#0a1e50' },
+  { max: 0.35, r: 30,  g: 80,  b: 160, name: '海',    color: '#1e50a0' },
+  { max: 0.40, r: 200, g: 180, b: 120, name: '砂浜',  color: '#c8b478' },
+  { max: 0.55, r: 60,  g: 140, b: 50,  name: '低地',  color: '#3c8c32' },
+  { max: 0.70, r: 30,  g: 90,  b: 20,  name: '高地',  color: '#1e5a14' },
+  { max: 0.85, r: 120, g: 110, b: 100, name: '山',    color: '#786e64' },
+  { max: 1.01, r: 240, g: 245, b: 255, name: '雪山',  color: '#f0f5ff' },
+];
+
+const TOPO_COLORS = [
+  { max: 0.20, r: 20,  g: 100, b: 200, name: '深海',  color: '#1464c8' },
+  { max: 0.35, r: 60,  g: 150, b: 220, name: '海',    color: '#3c96dc' },
+  { max: 0.40, r: 230, g: 210, b: 150, name: '砂浜',  color: '#e6d296' },
+  { max: 0.55, r: 100, g: 190, b: 80,  name: '低地',  color: '#64be50' },
+  { max: 0.70, r: 50,  g: 140, b: 40,  name: '高地',  color: '#328c28' },
+  { max: 0.85, r: 160, g: 140, b: 120, name: '山',    color: '#a08c78' },
+  { max: 1.01, r: 255, g: 255, b: 255, name: '雪山',  color: '#ffffff' },
+];
+
+function getColor(h, palette) {
+  for (const c of palette) {
+    if (h <= c.max) return c;
+  }
+  return palette[palette.length - 1];
+}
+
+function lerpColor(c1, c2, t) {
+  return { r: c1.r + (c2.r - c1.r) * t, g: c1.g + (c2.g - c1.g) * t, b: c1.b + (c2.b - c1.b) * t };
+}
+
+let heightMap = null;
+
+function generate() {
+  const seed = parseInt(document.getElementById('seedInput').value) || 42;
+  const octaves = parseInt(document.getElementById('octaves').value);
+  const persistence = parseFloat(document.getElementById('persistence').value);
+  const scale = parseFloat(document.getElementById('scale').value);
+  const noiseData = buildNoiseTable(seed);
+  const topo = document.getElementById('topoToggle').checked;
+  const contour = document.getElementById('contourToggle').checked;
+  const palette = topo ? TOPO_COLORS : TERRAIN_COLORS;
+
+  heightMap = new Float32Array(W * H);
+  const imgData = ctx.createImageData(W, H);
+  const data = imgData.data;
+
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++) {
+      const nx = (px / W) * scale;
+      const ny = (py / H) * scale;
+      const h = fbm(nx, ny, noiseData, octaves, persistence, 2.0);
+      heightMap[py * W + px] = h;
+
+      const c = getColor(h, palette);
+      const idx = (py * W + px) * 4;
+      data[idx] = c.r; data[idx+1] = c.g; data[idx+2] = c.b; data[idx+3] = 255;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Contour lines
+  if (contour) {
+    const levels = [0.2, 0.35, 0.4, 0.5, 0.55, 0.6, 0.7, 0.75, 0.8, 0.85];
+    for (const level of levels) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 0.7;
+      for (let py = 0; py < H - 1; py++) {
+        for (let px = 0; px < W - 1; px++) {
+          const h = heightMap[py * W + px];
+          const hr = heightMap[py * W + px + 1];
+          const hd = heightMap[(py+1) * W + px];
+          if ((h < level) !== (hr < level)) {
+            ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + 1, py + 1); ctx.stroke();
+          }
+          if ((h < level) !== (hd < level)) {
+            ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + 1, py + 1); ctx.stroke();
+          }
+        }
+      }
+    }
+  }
+
+  // Update legend
+  const legend = document.getElementById('legend');
+  legend.innerHTML = '';
+  palette.forEach(c => {
+    const item = document.createElement('div');
+    item.className = 'flex items-center gap-1';
+    const swatch = document.createElement('div');
+    swatch.className = 'w-4 h-4 rounded-sm';
+    swatch.style.background = c.color;
+    const label = document.createElement('span');
+    label.textContent = c.name;
+    item.appendChild(swatch);
+    item.appendChild(label);
+    legend.appendChild(item);
+  });
+}
+
+document.getElementById('octaves').addEventListener('input', e => { document.getElementById('octavesVal').textContent = e.target.value; });
+document.getElementById('persistence').addEventListener('input', e => { document.getElementById('persistenceVal').textContent = parseFloat(e.target.value).toFixed(2); });
+document.getElementById('scale').addEventListener('input', e => { document.getElementById('scaleVal').textContent = e.target.value; });
+document.getElementById('randomSeed').addEventListener('click', () => {
+  document.getElementById('seedInput').value = Math.floor(Math.random() * 99999);
+  generate();
+});
+document.getElementById('regenBtn').addEventListener('click', generate);
+document.getElementById('contourToggle').addEventListener('change', generate);
+document.getElementById('topoToggle').addEventListener('change', generate);
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'terrain-' + document.getElementById('seedInput').value + '.png';
+  a.click();
+});
+
+generate();
+</script>
+</body>
+</html>
